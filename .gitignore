@@ -1,0 +1,21 @@
+# Rust
+/target/
+**/*.rs.bk
+# Cargo.lock IS committed — this is an application, not a library.
+
+# game inputs that belong to pokeemerald_SDL3, never this repo
+*.gba
+*.sav
+*.pak
+
+# regenerable caches, not source of truth: cargo run -p worldgen / -p musicgen
+/assets/world.bin
+/assets/music/
+
+# personal, never published: local deployment notes + Claude Code local settings
+/LOCAL.md
+.claude/settings.local.json
+
+# editor / OS
+.DS_Store
+/web/dist/

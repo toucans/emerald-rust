@@ -1,0 +1,43 @@
+# Build the whole game from sources and publish web/dist to GitHub Pages.
+# Nothing pre-built enters git: the pret clone provides the data, the
+# extractors and the wasm build produce everything else.
+name: pages
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Create the Pages site on first run so deploy-pages doesn't 404;
+      # no manual Settings->Pages click needed to rebuild this repo.
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+      - name: Clone pret/pokeemerald (the data source of truth)
+        run: git clone --depth 1 https://github.com/pret/pokeemerald.git pret
+      - name: Rust wasm target
+        run: rustup target add wasm32-unknown-unknown
+      - name: Build packs + wasm + dist
+        run: PRET="$PWD/pret" ./web/build.sh
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/dist
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

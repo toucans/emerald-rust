@@ -1,0 +1,19 @@
+# The world extractor: reads a pret/pokeemerald clone, writes assets/world.bin
+# (the WorldPack format defined once in game/src/data.rs — shared types, no
+# format spec to drift). Build-time tool only: its dependencies (png for pret's
+# indexed PNGs, serde_json for pret's map/layout JSON) are NEVER linked into
+# the game or a backend — the monk-like dependency rule applies to what ships,
+# and what ships reads only the pack.
+
+[package]
+name = "worldgen"
+default-run = "worldgen"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+game = { path = "../game" }
+types = { path = "../types" }
+png = "0.17"
+serde_json = "1"

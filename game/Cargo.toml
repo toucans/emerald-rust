@@ -1,0 +1,9 @@
+[package]
+name = "game"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Pure game logic; emits Vec<Quad>. Depends only on `types`."
+
+[dependencies]
+types = { path = "../types" }

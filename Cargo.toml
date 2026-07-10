@@ -1,0 +1,20 @@
+[workspace]
+resolver = "3"
+members = ["types", "game", "backends", "worldgen", "audio", "musicgen"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+
+# The dependency rule (CLAUDE.md): Rust std + the ports + one crate per adapter.
+# A new entry here needs the same monk-like justification as everywhere else.
+
+# The web build: tuned for wasm size (the game is identical, just smaller).
+# Native builds keep the default release profile.
+[profile.web]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Emerald</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #000; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+  /* touch controls: shown only on coarse-pointer devices (see JS) */
+  #touch { display: none; position: fixed; inset: 0; pointer-events: none;
+           font-family: system-ui, sans-serif; -webkit-user-select: none; user-select: none; }
+  #touch .btn {
+    position: absolute; pointer-events: auto; touch-action: none;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.35);
+    color: rgba(255,255,255,.8); border-radius: 50%;
+    width: 56px; height: 56px; font-size: 20px; font-weight: 600;
+    /* a thin dark ring outside the light border, and a shadow under the
+       symbols, so the buttons read on bright ground (beaches, snow) */
+    box-shadow: 0 0 0 1.5px rgba(0,0,0,.55);
+    text-shadow: 0 0 2px rgba(0,0,0,.9), 0 1px 1px rgba(0,0,0,.8);
+  }
+  #touch .btn.held { background: rgba(255,255,255,.35); }
+  /* the d-pad is ONE touch surface: sliding between directions never needs a
+     lift, and the diamond zones fill every gap between the arrows */
+  #dpad { position: absolute; left: 12px; bottom: 12px; width: 196px; height: 196px;
+          pointer-events: auto; touch-action: none; }
+  #dpad .btn { pointer-events: none; }
+  #tU { left: 64px;  bottom: 120px; border-radius: 12px; }
+  #tD { left: 64px;  bottom: 8px;   border-radius: 12px; }
+  #tL { left: 8px;   bottom: 64px;  border-radius: 12px; }
+  #tR { left: 120px; bottom: 64px;  border-radius: 12px; }
+  /* A/B, bottom-right (A above-right of B, GBA-style) */
+  #tA { right: 20px; bottom: 96px; width: 64px; height: 64px; }
+  #tB { right: 96px; bottom: 40px; width: 64px; height: 64px; }
+  /* start/select pills, bottom-center (zoom lives in the start menu) */
+  #tS { left: 50%; transform: translateX(calc(-50% + 52px)); bottom: 24px;
+        width: 88px; height: 36px; border-radius: 18px; font-size: 14px; }
+  #tSel { left: 50%; transform: translateX(calc(-50% - 52px)); bottom: 24px;
+          width: 88px; height: 36px; border-radius: 18px; font-size: 14px;
+          position: absolute; }
+  /* portrait: the bottom center is squeezed between the d-pad and A/B, so
+     the pills rise above both clusters (the d-pad touch square tops out at
+     208px) — centered, a little above and left of A/B, clear of the arrows */
+  @media (orientation: portrait) {
+    #tS   { bottom: 216px; }
+    #tSel { bottom: 216px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="glcanvas" tabindex="1"></canvas>
+<div id="touch">
+  <div id="dpad">
+    <div class="btn" id="tU">▲</div><div class="btn" id="tD">▼</div>
+    <div class="btn" id="tL">◀</div><div class="btn" id="tR">▶</div>
+  </div>
+  <div class="btn" id="tA">A</div><div class="btn" id="tB">B</div>
+  <div class="btn" id="tS">START</div>
+  <div class="btn" id="tSel">SELECT</div>
+</div>
+<script src="gl.js"></script>
+<script>
+  load("emerald.wasm");
+
+  // ── music + sfx ──────────────────────────────────────────────────────
+  // The m4a mixer lives inside the game's wasm; PCM is pulled on the main
+  // thread through the emerald_audio_* exports and streamed to an
+  // AudioWorklet. Everything is set up EAGERLY at page load (the context
+  // just sits suspended) and user gestures only ever call resume() — no
+  // async work inside a gesture, which is what silently failed on Android.
+  const actx = new (window.AudioContext || window.webkitAudioContext)();
+  const WORKLET = `
+    class EmeraldSink extends AudioWorkletProcessor {
+      constructor() { super(); this.q = []; this.off = 0;
+        this.port.onmessage = (e) => this.q.push(e.data); }
+      process(_, outputs) {
+        const L = outputs[0][0], R = outputs[0][1] || outputs[0][0];
+        for (let i = 0; i < L.length; i++) {
+          const c = this.q[0];
+          if (!c) { L[i] = 0; R[i] = 0; continue; }
+          L[i] = c[this.off * 2]; R[i] = c[this.off * 2 + 1];
+          if (++this.off * 2 >= c.length) { this.q.shift(); this.off = 0; }
+        }
+        return true;
+      }
+    }
+    registerProcessor("emerald-sink", EmeraldSink);`;
+
+  (async () => {
+    const rate = actx.sampleRate | 0;
+    const CHUNK = 2048;
+    const pull = () => {
+      const ptr = wasm_exports.emerald_audio_buffer(CHUNK);
+      wasm_exports.emerald_audio_render(CHUNK, rate);
+      return new Float32Array(wasm_memory.buffer, ptr, CHUNK * 2).slice();
+    };
+    let feed;
+    if (window.AudioWorklet) {
+      const url = URL.createObjectURL(new Blob([WORKLET], { type: "application/javascript" }));
+      await actx.audioWorklet.addModule(url);
+      const node = new AudioWorkletNode(actx, "emerald-sink", { outputChannelCount: [2] });
+      node.connect(actx.destination);
+      let sent = 0, t0 = null;
+      feed = () => {
+        if (actx.state !== "running" || typeof wasm_exports === "undefined" || !wasm_exports) return;
+        if (t0 === null) t0 = actx.currentTime;
+        const target = (actx.currentTime - t0 + 0.2) * rate;
+        while (sent < target) {
+          try { node.port.postMessage(pull()); } catch (e) { return; }
+          sent += CHUNK;
+        }
+      };
+    } else {
+      const node = actx.createScriptProcessor(CHUNK, 1, 2);
+      node.onaudioprocess = (e) => {
+        const L = e.outputBuffer.getChannelData(0), R = e.outputBuffer.getChannelData(1);
+        try {
+          const pcm = pull();
+          for (let i = 0; i < CHUNK; i++) { L[i] = pcm[i * 2]; R[i] = pcm[i * 2 + 1]; }
+        } catch (err) { L.fill(0); R.fill(0); }
+      };
+      node.connect(actx.destination);
+      feed = () => {};
+    }
+    setInterval(feed, 40);
+  })();
+
+  const unlock = () => { if (actx.state !== "running") actx.resume(); };
+  for (const ev of ["keydown", "pointerdown", "touchstart", "touchend", "click"])
+    window.addEventListener(ev, unlock, { passive: true });
+
+  // ── save persistence ─────────────────────────────────────────────────
+  // The sim state IS the save (a few dozen bytes). Push the stored one into
+  // the wasm once it's up, then mirror the latest state to localStorage a
+  // few times a minute — closing the tab loses at most a few seconds.
+  const SAVE_KEY = "emerald-save";
+  let restored = false;
+  const ready = () => typeof wasm_exports !== "undefined" && wasm_exports &&
+                      wasm_exports.emerald_save_len;
+  const boot = setInterval(() => {
+    if (!ready()) return;
+    clearInterval(boot);
+    const b64 = localStorage.getItem(SAVE_KEY);
+    if (b64) {
+      const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+      const ptr = wasm_exports.emerald_restore_buffer(bytes.length);
+      new Uint8Array(wasm_memory.buffer, ptr, bytes.length).set(bytes);
+      wasm_exports.emerald_restore_commit();
+    }
+    restored = true;
+  }, 100);
+  const mirror = () => {
+    if (!restored) return;
+    const len = wasm_exports.emerald_save_len();
+    if (len === 0) return;
+    const bytes = new Uint8Array(wasm_memory.buffer, wasm_exports.emerald_save_ptr(), len);
+    localStorage.setItem(SAVE_KEY, btoa(String.fromCharCode(...bytes)));
+  };
+  setInterval(mirror, 3000);
+  addEventListener("pagehide", mirror); // closing the tab loses nothing
+
+  // ── touch controls ───────────────────────────────────────────────────
+  // Buttons dispatch synthetic keyboard events at the canvas (gl.js's
+  // global) — the same input path as a keyboard. The d-pad is one surface:
+  // the pressed direction is picked by |dx| vs |dy| around the center,
+  // which partitions the square into four 45°-rotated diamond zones with no
+  // dead gaps, so a finger can slide between directions without lifting.
+  if (matchMedia("(pointer: coarse)").matches || "ontouchstart" in window) {
+    document.getElementById("touch").style.display = "block";
+    const send = (type, code) => canvas.dispatchEvent(new KeyboardEvent(type, { code }));
+
+    const dpad = document.getElementById("dpad");
+    const arrow = { ArrowUp: "tU", ArrowDown: "tD", ArrowLeft: "tL", ArrowRight: "tR" };
+    let held = null;
+    const setDir = (code) => {
+      if (code === held) return;
+      if (held) { send("keyup", held); document.getElementById(arrow[held]).classList.remove("held"); }
+      held = code;
+      if (code) { send("keydown", code); document.getElementById(arrow[code]).classList.add("held"); }
+    };
+    const dirFor = (t) => {
+      const r = dpad.getBoundingClientRect();
+      const dx = t.clientX - (r.left + r.width / 2);
+      const dy = t.clientY - (r.top + r.height / 2);
+      if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return held; // dead center: keep
+      return Math.abs(dx) > Math.abs(dy)
+        ? (dx > 0 ? "ArrowRight" : "ArrowLeft")
+        : (dy > 0 ? "ArrowDown" : "ArrowUp");
+    };
+    const onTouch = (e) => { e.preventDefault(); setDir(dirFor(e.targetTouches[0])); };
+    dpad.addEventListener("touchstart", onTouch, { passive: false });
+    dpad.addEventListener("touchmove", onTouch, { passive: false });
+    for (const ev of ["touchend", "touchcancel"])
+      dpad.addEventListener(ev, (e) => {
+        e.preventDefault();
+        if (e.targetTouches.length === 0) setDir(null);
+      }, { passive: false });
+
+    const keys = { tA: "KeyZ", tB: "KeyX", tS: "Enter", tSel: "Backspace" };
+    for (const [id, code] of Object.entries(keys)) {
+      const el = document.getElementById(id);
+      const down = (e) => { e.preventDefault(); el.classList.add("held"); send("keydown", code); unlock(); };
+      const up = (e) => { e.preventDefault(); el.classList.remove("held"); send("keyup", code); };
+      el.addEventListener("touchstart", down, { passive: false });
+      el.addEventListener("touchend", up, { passive: false });
+      el.addEventListener("touchcancel", up, { passive: false });
+    }
+  }
+</script>
+</body>
+</html>

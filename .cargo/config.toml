@@ -1,0 +1,4 @@
+# wasm32: miniquad's JS glue (mq_js_bundle.js) provides the gl/canvas/etc.
+# symbols at instantiation time; tell the linker they are imports, not errors.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "link-arg=--import-undefined"]
